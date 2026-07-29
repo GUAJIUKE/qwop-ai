@@ -59,10 +59,15 @@ plt.rcParams.update({
 def load_csv(path):
     rows = []
     with open(path, newline="", encoding="utf-8") as f:
-        for r in csv.DictReader(f):
-            rows.append({k: (float(v) if v not in ("0", "1") or k in
-                             ("metres", "reward", "length", "step") else int(v))
-                         for k, v in r.items()})
+        reader = csv.DictReader(f)
+        for r in reader:
+            try:
+                rows.append({k: (float(v) if v not in ("0", "1") or k in
+                                 ("metres", "reward", "length", "step")
+                                 else int(v))
+                             for k, v in r.items()})
+            except (ValueError, TypeError):
+                continue  # 跳过可能的重复表头行
     return rows
 
 

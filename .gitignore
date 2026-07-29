@@ -8,7 +8,6 @@ venv/
 # ---- 训练 / 运行产物 (本地生成, 不入库) ----
 models/
 logs/
-analysis/
 metrics.json
 episodes.csv
 *.tfevents*
