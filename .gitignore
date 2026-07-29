@@ -1,0 +1,31 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ---- 训练 / 运行产物 (本地生成, 不入库) ----
+models/
+logs/
+analysis/
+metrics.json
+episodes.csv
+*.tfevents*
+
+# ---- 私有游戏二进制文件 ----
+# 由 fetch_game.py 从官方源下载并打补丁生成, 本仓库不重新分发
+game/QWOP.min.js
+game/assets/
+game/lib/howler.js
+
+# ---- 机器相关的启动器 (硬编码了本地 venv 绝对路径) ----
+train.bat
+watch.bat
+dashboard.bat
+analyze.bat
+
+# ---- 杂项 ----
+.workbuddy/
+.DS_Store
+node_modules/

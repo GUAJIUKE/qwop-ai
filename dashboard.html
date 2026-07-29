@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QWOP 训练仪表盘</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#181b24; --panel2:#1f232e; --line:#2a2f3c;
+    --text:#e6e8ee; --muted:#8b93a7; --accent:#4f8cff; --good:#39d98a;
+    --warn:#ffb454; --bad:#ff5d6c; --purple:#b07bff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;}
+  header{padding:16px 22px;border-bottom:1px solid var(--line);display:flex;align-items:baseline;gap:14px}
+  header h1{font-size:18px;margin:0;font-weight:600}
+  header .sub{color:var(--muted);font-size:12px}
+  .wrap{padding:18px 22px;display:grid;grid-template-columns:repeat(12,1fr);gap:16px;max-width:1280px;margin:0 auto}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .span3{grid-column:span 3}.span4{grid-column:span 4}.span6{grid-column:span 6}
+  .span8{grid-column:span 8}.span12{grid-column:span 12}
+  @media(max-width:900px){.span3,.span4,.span6,.span8{grid-column:span 12}}
+  .metric .label{color:var(--muted);font-size:12px}
+  .metric .value{font-size:30px;font-weight:700;letter-spacing:.5px;margin-top:4px}
+  .metric .value small{font-size:14px;color:var(--muted);font-weight:400}
+  .bar{height:8px;border-radius:6px;background:var(--panel2);margin-top:10px;overflow:hidden}
+  .bar>i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--good));width:0%}
+  .card h3{margin:0 0 10px;font-size:13px;color:var(--muted);font-weight:600}
+  canvas{width:100%;display:block}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .reward-ctrl{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+  .ctrl{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px 12px}
+  .ctrl label{display:flex;justify-content:space-between;font-size:12px;color:var(--muted)}
+  .ctrl label b{color:var(--text);font-variant-numeric:tabular-nums}
+  .ctrl input[type=range]{width:100%;margin-top:6px;accent-color:var(--accent)}
+  .hint{color:var(--muted);font-size:12px;margin-top:8px}
+  .pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600}
+  .pill.good{background:rgba(57,217,138,.15);color:var(--good)}
+  .pill.bad{background:rgba(255,93,108,.15);color:var(--bad)}
+  .pill.warn{background:rgba(255,180,84,.15);color:var(--warn)}
+</style>
+</head>
+<body>
+<header>
+  <h1>QWOP 训练仪表盘</h1>
+  <span class="sub" id="status">连接中…</span>
+</header>
+
+<div class="wrap">
+  <div class="card span3 metric"><div class="label">训练步数</div><div class="value" id="m_step">0</div>
+    <div class="bar"><i id="m_progress"></i></div><div class="hint" id="m_total">/ 0</div></div>
+  <div class="card span3 metric"><div class="label">最远纪录</div><div class="value" id="m_best">0 <small>米</small></div>
+    <div class="bar"><i id="m_bestbar"></i></div><div class="hint">目标 100 米（含沙坑跳远）</div></div>
+  <div class="card span3 metric"><div class="label">跨栏成功率</div><div class="value" id="m_cross">0<small>%</small></div>
+    <div class="hint" id="m_cross_h">最近 60 回合</div></div>
+  <div class="card span3 metric"><div class="label">通关率 / FPS</div><div class="value" id="m_succ">0<small>%</small> · <span id="m_fps">0</span></div>
+    <div class="hint" id="m_ep">回合 0</div></div>
+
+  <div class="card span8"><h3>最远距离 vs 步数（学习曲线）</h3><canvas id="bestChart" height="240"></canvas></div>
+  <div class="card span4"><h3>最近 60 回合距离</h3><canvas id="recentChart" height="240"></canvas></div>
+
+  <div class="card span6"><h3>平均回合奖励 vs 步数</h3><canvas id="rewardChart" height="220"></canvas></div>
+  <div class="card span6"><h3>动作分布（9 个离散动作）</h3><canvas id="actionChart" height="220"></canvas></div>
+
+  <div class="card span12">
+    <h3>实时调整奖励权重（保存后立即生效，训练中的 agent 会自动采用）</h3>
+    <div class="reward-ctrl" id="rewardCtrl"></div>
+    <div class="hint">提示：卡在"跪地蹭"局部最优 → 调大 <b>time_penalty_per_step</b> 或 <b>fall_penalty</b>；
+      太早摔学不动 → 调小 <b>fall_penalty</b>；想更强奖励跳远 → 调大 <b>jump_distance_bonus</b>。</div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt = n => (n==null?0:n).toLocaleString('en-US');
+let rewardKeys = [];
+
+function setupCanvas(cv){
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight || cv.height;
+  cv.width = w*dpr; cv.height = h*dpr;
+  const ctx = cv.getContext('2d'); ctx.scale(dpr,dpr);
+  return {ctx,w,h};
+}
+function lineChart(cv, pts, {minY=null,maxY=null,color='#4f8cff',fill=true,label=''}={}){
+  const {ctx,w,h}=setupCanvas(cv); ctx.clearRect(0,0,w,h);
+  if(!pts||pts.length<2){ctx.fillStyle='#8b93a7';ctx.font='13px sans-serif';ctx.fillText('等待数据…',12,20);return;}
+  const xs=pts.map(p=>p.x), ys=pts.map(p=>p.y);
+  let lo=minY!=null?minY:Math.min(...ys), hi=maxY!=null?maxY:Math.max(...ys);
+  if(hi-lo<1e-6) hi=lo+1; const pad=(hi-lo)*0.1; lo-=pad; hi+=pad;
+  const x0=Math.min(...xs), x1=Math.max(...xs), xr=(x1-x0)||1;
+  const X=v=>40+(v-x0)/xr*(w-50), Y=v=>h-24-(v-lo)/(hi-lo)*(h-40);
+  // 网格
+  ctx.strokeStyle='#2a2f3c';ctx.lineWidth=1;
+  for(let i=0;i<=4;i++){const y=24+i*(h-40)/4;ctx.beginPath();ctx.moveTo(40,y);ctx.lineTo(w-10,y);ctx.stroke();}
+  if(fill){ctx.beginPath();ctx.moveTo(X(xs[0]),Y(ys[0]));
+    for(let i=1;i<pts.length;i++)ctx.lineTo(X(xs[i]),Y(ys[i]));
+    ctx.lineTo(X(xs[xs.length-1]),h-24);ctx.lineTo(X(xs[0]),h-24);ctx.closePath();
+    ctx.fillStyle='rgba(79,140,255,.12)';ctx.fill();}
+  ctx.beginPath();ctx.moveTo(X(xs[0]),Y(ys[0]));
+  for(let i=1;i<pts.length;i++)ctx.lineTo(X(xs[i]),Y(ys[i]));
+  ctx.strokeStyle=color;ctx.lineWidth=2;ctx.stroke();
+  // 轴标
+  ctx.fillStyle='#8b93a7';ctx.font='11px sans-serif';
+  ctx.fillText(label,6,Y((hi+lo)/2)); ctx.fillText(hi.toFixed(1),6,26);ctx.fillText(lo.toFixed(1),6,h-26);
+  ctx.fillText(fmt(Math.round(x0)),40,h-8);ctx.fillText(fmt(Math.round(x1)),w-50,h-8);
+}
+function barsChart(cv, data, {colors=null}={}){
+  const {ctx,w,h}=setupCanvas(cv); ctx.clearRect(0,0,w,h);
+  if(!data||!data.length){ctx.fillStyle='#8b93a7';ctx.font='13px sans-serif';ctx.fillText('等待数据…',12,20);return;}
+  const max=Math.max(...data.map(d=>d.v),1);
+  const n=data.length, bw=Math.min(34,(w-20)/n-6), gap=(w-20-n*bw)/Math.max(n,1);
+  ctx.font='11px sans-serif';
+  data.forEach((d,i)=>{
+    const x=10+i*(bw+gap), bh=(d.v/max)*(h-40), y=h-24-bh;
+    ctx.fillStyle=colors?colors[i%colors.length]:'#4f8cff';
+    ctx.fillRect(x,y,bw,bh);
+    ctx.fillStyle='#8b93a7';ctx.textAlign='center';
+    ctx.fillText(d.k, x+bw/2, h-10);
+    if(d.v>=0){ctx.fillStyle='#e6e8ee';ctx.fillText(d.v.toFixed(d.dec??1), x+bw/2, y-4);}
+  });
+  ctx.textAlign='left';
+}
+function pill(ok){return ok?'<span class="pill good">已跨栏</span>':'<span class="pill bad">未跨</span>';}
+
+async function loadReward(){
+  try{
+    const r=await fetch('/api/reward'); const cfg=await r.json();
+    rewardKeys=Object.keys(cfg).filter(k=>typeof cfg[k]==='number');
+    const box=$('rewardCtrl'); box.innerHTML='';
+    rewardKeys.forEach(k=>{
+      const v=cfg[k]; const min=Math.min(0, v*2), max=Math.max(v*2, 0.01);
+      const el=document.createElement('div'); el.className='ctrl';
+      el.innerHTML=`<label>${k}<b id="rv_${k}">${v}</b></label>
+        <input type="range" min="${min}" max="${max}" step="${(max-min)/100}" value="${v}" data-k="${k}">`;
+      box.appendChild(el);
+      el.querySelector('input').addEventListener('input',async ev=>{
+        const kk=ev.target.dataset.k, val=parseFloat(ev.target.value);
+        $('rv_'+kk).textContent=val;
+        await fetch('/api/reward',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({[kk]:val})});
+      });
+    });
+  }catch(e){}
+}
+
+async function tick(){
+  try{
+    const r=await fetch('/api/metrics'); const d=await r.json();
+    $('status').textContent='已连接 · 自动刷新'; $('status').style.color='var(--good)';
+    $('m_step').textContent=fmt(d.step);
+    $('m_total').textContent='/ '+fmt(d.total_steps);
+    $('m_progress').style.width=(100*(d.step||0)/Math.max(d.total_steps||1,1))+'%';
+    $('m_best').innerHTML=(d.best_metres||0)+' <small>米</small>';
+    $('m_bestbar').style.width=Math.min(100,(100*(d.best_metres||0)/100))+'%';
+    const cr=Math.round((d.hurdle_cross_rate||0)*100);
+    $('m_cross').innerHTML=cr+'<small>%</small>';
+    $('m_cross_h').innerHTML = (d.hurdle_cross_rate>=0.8?'<span class="pill good">良好</span>':d.hurdle_cross_rate>=0.4?'<span class="pill warn">一般</span>':'<span class="pill bad">偏低</span>')+' 最近60回合';
+    const sr=Math.round((d.success_rate||0)*100);
+    $('m_succ').innerHTML=sr+'<small>%</small> · <span id="m_fps">'+ (d.fps||0) +'</span>';
+    $('m_ep').textContent='回合 '+fmt(d.episodes);
+    lineChart($('bestChart'), (d.history||[]).map(h=>({x:h.step,y:h.best})), {color:'#39d98a',label:'米'});
+    lineChart($('rewardChart'), (d.history||[]).map(h=>({x:h.step,y:h.reward_mean})), {color:'#ffb454',label:'reward'});
+    const rec=(d.recent||[]).map(e=>({k:(e.m).toFixed(0),v:e.m,dec:0}));
+    barsChart($('recentChart'), rec, {colors:rec.map(e=>e.success?'#39d98a':(e.crossed?'#4f8cff':'#ff5d6c'))});
+    const ad=d.action_dist||{}; const acts=Object.keys(ad).map(Number).sort((a,b)=>a-b);
+    barsChart($('actionChart'), acts.map(a=>({k:'a'+a,v:ad[a]})), {colors:['#b07bff']});
+  }catch(e){
+    $('status').textContent='未连接（先运行 python train.py）'; $('status').style.color='var(--bad)';
+  }
+}
+loadReward(); tick(); setInterval(tick,1000);
+window.addEventListener('resize', tick);
+</script>
+</body>
+</html>

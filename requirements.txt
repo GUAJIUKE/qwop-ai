@@ -1,0 +1,8 @@
+gymnasium
+stable-baselines3
+playwright
+tensorboard
+matplotlib
+tqdm
+rich
+numpy

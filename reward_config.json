@@ -1,0 +1,13 @@
+{
+  "_comment": "QWOP 奖励权重。修改后保存即可生效（env 每步按 mtime 自动重载），也可在训练仪表盘里实时调。",
+  "forward_per_metre": 1.0,
+  "time_penalty_per_step": 0.002,
+  "fall_penalty": 5.0,
+  "timeout_penalty": 5.0,
+  "hurdle_stand_bonus": 8.0,
+  "hurdle_crawl_bonus": 1.0,
+  "hurdle_stand_sin_threshold": 0.7,
+  "hurdle_stand_headY_threshold": 0.0,
+  "jump_distance_bonus": 1.0,
+  "success_terminal_bonus": 50.0
+}
