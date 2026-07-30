@@ -26,6 +26,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 from qwop_env import QWOPEnv
+from qwop_phys import QWOPPhysEnv
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(HERE, "models")
@@ -127,13 +128,22 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, default=None)
     parser.add_argument("--episodes", type=int, default=3)
-    parser.add_argument("--mode", type=str, default="game",
+    parser.add_argument("--mode", type=str, default="pose",
                         choices=["game", "pose"])
+    parser.add_argument("--backend", type=str, default="phys",
+                        choices=["phys", "browser"])
     args = parser.parse_args()
 
     model_path = pick_model(args.model)
-    print(f"加载模型: {model_path}  模式: {args.mode}")
+    print(f"加载模型: {model_path}  后端: {args.backend}  模式: {args.mode}")
 
+    if args.backend == "browser":
+        watch_browser(args, model_path)
+    else:
+        watch_phys(args, model_path)
+
+
+def watch_browser(args, model_path):
     env = DummyVecEnv([
         lambda: QWOPEnv(headless=False, frames_per_step=3, realtime=True)
     ])
@@ -172,6 +182,87 @@ def main():
         print(f"第 {ep + 1} 局: {info['metres']:.2f} 米 ({tag})")
 
     env.close()
+
+
+def watch_phys(args, model_path):
+    """物理后端观战：matplotlib 实时画骨架 + 控制台 HUD（无需浏览器）。"""
+    import time
+    try:
+        import matplotlib
+        matplotlib.use("TkAgg")
+        import matplotlib.pyplot as plt
+        HAVE_MPL = True
+    except Exception:
+        HAVE_MPL = False
+
+    env = DummyVecEnv([lambda: QWOPPhysEnv(frames_per_step=3, max_steps=2000)])
+    vn_path = os.path.join(MODEL_DIR, "vecnormalize_phys.pkl")
+    if not os.path.exists(vn_path):
+        vn_path = os.path.join(MODEL_DIR, "vecnormalize.pkl")
+    if os.path.exists(vn_path):
+        env = VecNormalize.load(vn_path, env)
+        env.training = False
+        env.norm_reward = False
+
+    model = PPO.load(model_path)
+
+    if HAVE_MPL and args.mode == "pose":
+        fig, ax = plt.subplots(figsize=(6, 7))
+        plt.ion(); fig.show()
+
+    for ep in range(args.episodes):
+        obs, _ = env.reset()
+        done = False
+        step = 0
+        while not done:
+            action, _ = model.predict(obs, deterministic=True)
+            obs, reward, dones, infos = env.step(action)
+            info = infos[0]
+            step += 1
+            if HAVE_MPL and args.mode == "pose":
+                pose = env.envs[0].get_pose()
+                _draw_pose(ax, pose, info)
+                fig.canvas.draw(); fig.canvas.flush_events()
+                time.sleep(0.04)
+            if step % 10 == 0 or done:
+                tag = "终点!" if info.get("success") else ("摔倒" if info.get("fallen") else "")
+                print(f"  ep{ep+1} step{step}: {info['metres']:.1f}m "
+                      f"动作={ACT_NAMES[int(action)]} 跨栏={info.get('crossed_hurdle')} {tag}")
+            done = bool(dones[0])
+        tag = "到达终点!" if info.get("success") else ("摔倒" if info.get("fallen") else "超时")
+        print(f"第 {ep + 1} 局: {info['metres']:.2f} 米 ({tag})")
+        if HAVE_MPL:
+            time.sleep(1.0)
+
+    env.close()
+    if HAVE_MPL:
+        plt.ioff(); plt.show()
+
+
+def _draw_pose(ax, pose, info):
+    ax.clear()
+    if not pose or not pose.get("torso"):
+        return
+    edges = [("head", "torso"), ("torso", "leftArm"), ("leftArm", "leftForearm"),
+             ("torso", "rightArm"), ("rightArm", "rightForearm"),
+             ("torso", "leftThigh"), ("leftThigh", "leftCalf"), ("leftCalf", "leftFoot"),
+             ("torso", "rightThigh"), ("rightThigh", "rightCalf"), ("rightCalf", "rightFoot")]
+    xs = [p["x"] for p in pose.values() if p]
+    ys = [p["y"] for p in pose.values() if p]
+    minx, maxx = min(xs), max(xs); miny, maxy = min(ys), max(ys)
+    pad = 30
+    def tx(x): return (x - minx) / (maxx - minx or 1) * (8) + 1
+    def ty(y): return (y - miny) / (maxy - miny or 1) * (12) + 1
+    ax.set_xlim(0, 10); ax.set_ylim(0, 14)
+    for a, b in edges:
+        pa, pb = pose.get(a), pose.get(b)
+        if not pa or not pb:
+            continue
+        ax.plot([tx(pa["x"]), tx(pb["x"])], [ty(pa["y"]), ty(pb["y"])], "-o",
+                color="#4f8cff", linewidth=4, markersize=6)
+    ax.set_title(f"距离 {info.get('metres',0):.1f} m  动作={ACT_NAMES.get(0,'')} "
+                 f"跨栏={info.get('crossed_hurdle')}", fontsize=11)
+    ax.set_aspect("equal"); ax.axis("off")
 
 
 if __name__ == "__main__":

@@ -21,8 +21,9 @@
 ## 🧰 环境要求
 
 - Python 3.10+
-- [Playwright](https://playwright.dev/) 浏览器内核（Chromium / Edge / Chrome 任一）
-- 一个现代浏览器（观战 / 仪表盘用）
+- **默认物理后端**：`box2d`（纯 Python Box2D，`pip install box2d`），无需浏览器，速度极快
+- **浏览器后端（可选）**：[Playwright](https://playwright.dev/) 浏览器内核（Chromium / Edge / Chrome 任一）
+- 一个现代浏览器（浏览器后端观战 / 仪表盘用）
 
 ---
 
@@ -57,6 +58,46 @@ python dashboard.py                  # 启动实时仪表盘 http://127.0.0.1:87
 
 ---
 
+## 🧱 两种训练后端（速度关键）
+
+训练瓶颈**不在神经网络，而在环境仿真**：原版环境用 Playwright 驱动浏览器跑 Box2D 物理，
+每次 `step()` 都要一次跨进程 `page.evaluate` 往返，单环境约 **20× 实时**。智能体的 MLP
+（`[256,256]`）算力相对可忽略。
+
+本项目提供两种后端，由 `train.py --backend` 切换：
+
+| 后端 | 原理 | 速度（单环境） | 保真度 |
+|---|---|---|---|
+| `browser`（原版） | Playwright 驱动真实 QWOP 游戏 | ~20× 实时 | 100% 原版游戏 |
+| **`phys`（默认）** | 纯 Python Box2D 复刻 12 刚体 ragdoll，进程内运行 | **~数百× 实时** | QWOP 风格复刻（标准做法） |
+
+`phys` 后端去掉了浏览器 + Playwright 的全部开销，单环境可达 **约 870× 实时**（实测约 2.6 万物理帧/秒），
+比原版快 **40 倍以上**，且 obs(88)/动作(9)/奖励/跨栏/沙坑接口与原版**完全一致**，所以
+`train.py` / `watch.py` / `analyze.py` / 仪表盘都无需改动即可切换。
+
+> ⚠️ **保真度说明**：`phys` 后端是用 Box2D 从头复刻的 QWOP 风格双足 ragdoll（相同的 12 刚体、
+> Q/W/O/P 肌肉控制、跨栏与沙坑机制），而非官方游戏二进制。这是 QWOP-AI 研究的**通用做法**
+> （原版游戏代码混淆、强耦合浏览器，难以高速批量仿真）。若需与原版 1:1 对照，用 `--backend browser`。
+> 为让底座可学，`phys` 后端对躯干施加了"核心稳定"PD 力矩（模拟核心张力），因此平衡难度低于原版，
+> 但前进/跨栏/跳远仍是需学习的操控任务。
+
+```bash
+# 默认物理后端（极快，推荐）
+python train.py --n-envs 8 --timesteps 3000000
+
+# 对照：原版浏览器后端（忠实但慢）
+python train.py --backend browser --n-envs 8 --timesteps 3000000
+```
+
+观战同样支持两种后端：
+
+```bash
+python watch.py --backend phys   --mode pose   # matplotlib 实时骨架（无需浏览器）
+python watch.py --backend browser --mode pose  # 浏览器画面 + HUD/骨架叠加
+```
+
+---
+
 ## 🏃 游戏机制
 
 | 要素 | 说明 |
@@ -88,9 +129,11 @@ python dashboard.py                  # 启动实时仪表盘 http://127.0.0.1:87
 
 ```
 qwop-ai/
-├── qwop_env.py        # Gymnasium 环境 (Playwright 驱动浏览器)
-├── train.py           # PPO 训练 (并行环境 / 断点续训 / TensorBoard)
-├── watch.py           # 观战 + HUD/骨架叠加
+├── qwop_env.py        # Gymnasium 环境 (Playwright 驱动浏览器, --backend browser)
+├── qwop_phys.py       # Gymnasium 环境 (纯 Python Box2D 复刻, 默认 --backend phys, 极快)
+├── train.py           # PPO 训练 (两种后端 / 并行环境 / 断点续训 / TensorBoard)
+├── train_phys_sanity.py  # 物理后端可学习性验证脚本
+├── watch.py           # 观战 + HUD/骨架 (两种后端)
 ├── analyze.py         # 训练后分析图 (matplotlib)
 ├── dashboard.py       # 实时训练仪表盘 (本地 HTTP 服务)
 ├── dashboard.html     # 仪表盘前端

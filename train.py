@@ -1,13 +1,18 @@
 """QWOP PPO 训练脚本 (stable-baselines3)。
 
 用法:
-    python train.py                          # 新训练, 默认 4 个并行环境
-    python train.py --n-envs 8               # 8 个并行浏览器
+    python train.py                          # 新训练, 默认 4 个并行环境 (物理后端, 极快)
+    python train.py --backend browser        # 用原版浏览器后端 (需 Playwright)
+    python train.py --n-envs 8               # 8 个并行环境
     python train.py --resume                 # 从最新 checkpoint 续训
     python train.py --timesteps 5000000      # 指定训练步数
 
 监控:
     tensorboard --logdir logs
+
+后端说明:
+    phys    : 纯 Python Box2D 复刻 QWOP ragdoll, 进程内运行, ~数百倍实时速度 (默认)
+    browser : 原版 QWOP 游戏 + Playwright, 忠实但慢 (~20x 实时)
 """
 from __future__ import annotations
 
@@ -34,6 +39,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
 
 from qwop_env import QWOPEnv
+from qwop_phys import QWOPPhysEnv
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(HERE, "models")
@@ -42,9 +48,12 @@ METRICS_PATH = os.path.join(HERE, "metrics.json")
 CSV_PATH = os.path.join(HERE, "episodes.csv")
 
 
-def make_env(rank: int):
+def make_env(rank: int, backend: str = "phys"):
     def _init():
-        env = QWOPEnv(headless=True, frames_per_step=3, max_steps=2000)
+        if backend == "browser":
+            env = QWOPEnv(headless=True, frames_per_step=3, max_steps=2000)
+        else:
+            env = QWOPPhysEnv(frames_per_step=3, max_steps=2000)
         return Monitor(env)
     return _init
 
@@ -179,12 +188,15 @@ def main():
     parser.add_argument("--n-envs", type=int, default=4)
     parser.add_argument("--timesteps", type=int, default=3_000_000)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--backend", type=str, default="phys",
+                        choices=["phys", "browser"])
     args = parser.parse_args()
 
     os.makedirs(MODEL_DIR, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
+    print(f"训练后端: {args.backend}  |  并行环境: {args.n_envs}  |  目标步数: {args.timesteps:,}")
 
-    venv = SubprocVecEnv([make_env(i) for i in range(args.n_envs)])
+    venv = SubprocVecEnv([make_env(i, args.backend) for i in range(args.n_envs)])
     vn_path = os.path.join(MODEL_DIR, "vecnormalize.pkl")
     if args.resume and os.path.exists(vn_path):
         venv = VecNormalize.load(vn_path, venv)
