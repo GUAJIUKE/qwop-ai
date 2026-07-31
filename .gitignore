@@ -10,6 +10,7 @@ models/
 logs/
 metrics.json
 episodes.csv
+episodes_archive_*.csv
 *.tfevents*
 
 # ---- 私有游戏二进制文件 ----

@@ -176,6 +176,26 @@ class MetricsCallback(BaseCallback):
         return True
 
 
+class SaveVecNormCallback(BaseCallback):
+    """周期性把 VecNormalize 统计落盘, 避免训练被中断时丢失观测归一化统计
+    (否则续训/评估会因陈旧的 pkl 而完全失效)。"""
+
+    def __init__(self, path: str, save_freq: int = 200_000):
+        super().__init__()
+        self.path = path
+        self.save_freq = save_freq
+
+    def _on_step(self) -> bool:
+        if self.n_calls % self.save_freq == 0:
+            try:
+                vn = self.model.get_vec_normalize_env()
+                if vn is not None:
+                    vn.save(self.path)
+            except Exception:
+                pass
+        return True
+
+
 def latest_checkpoint() -> str | None:
     files = glob.glob(os.path.join(MODEL_DIR, "ppo_qwop_*_steps.zip"))
     if not files:
@@ -190,7 +210,16 @@ def main():
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--backend", type=str, default="phys",
                         choices=["phys", "browser"])
+    parser.add_argument("--outdir", type=str, default=None,
+                        help="模型/日志输出目录(默认 models/)。用于把不同物理实验隔离, "
+                             "避免覆盖 52s 最优模型。")
     args = parser.parse_args()
+
+    # 隔离输出目录: 重构实验写入独立文件夹, 绝不污染 52s 备份
+    global MODEL_DIR, LOG_DIR
+    if args.outdir:
+        MODEL_DIR = os.path.abspath(args.outdir)
+        LOG_DIR = os.path.join(MODEL_DIR, "logs")
 
     os.makedirs(MODEL_DIR, exist_ok=True)
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -225,12 +254,13 @@ def main():
 
     callbacks = [
         CheckpointCallback(
-            save_freq=max(50_000 // args.n_envs, 1),
+            save_freq=100_000,  # 每 10 万步存一次, 3M 步约 30 个 checkpoint
             save_path=MODEL_DIR,
             name_prefix="ppo_qwop",
         ),
         BestMetresCallback(),
         MetricsCallback(total_timesteps=args.timesteps, write_every=10.0),
+        SaveVecNormCallback(os.path.join(MODEL_DIR, "vecnormalize.pkl"), save_freq=200_000),
     ]
 
     try:

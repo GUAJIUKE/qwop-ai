@@ -1,7 +1,7 @@
 {
-  "_comment": "QWOP 奖励权重。修改后保存即可生效（env 每步按 mtime 自动重载），也可在训练仪表盘里实时调。",
+  "_comment": "QWOP 奖励权重。修改后保存即可生效（env 每步按 mtime 自动重载），也可在训练仪表盘里实时调。速度优先版 v2: 在 v1(终点速度奖励 speed_bonus_coef) 基础上新增「密集前向速度奖励 velocity_coeff」——每步直接按当前前进速度(m/s)给奖励, 信号即时, 学习远快于仅靠终点奖励; 同时物理端已放开关节电机速度上限(CLAMP 12->18)与髋/膝驱动扭矩(HIP 28k->42k, KNEE 12k->22k)以抬高速度上限。",
   "forward_per_metre": 1.0,
-  "time_penalty_per_step": 0.002,
+  "time_penalty_per_step": 0.02,
   "fall_penalty": 5.0,
   "timeout_penalty": 5.0,
   "hurdle_stand_bonus": 8.0,
@@ -9,5 +9,7 @@
   "hurdle_stand_sin_threshold": 0.7,
   "hurdle_stand_headY_threshold": 0.0,
   "jump_distance_bonus": 1.0,
-  "success_terminal_bonus": 50.0
+  "success_terminal_bonus": 50.0,
+  "speed_bonus_coef": 150.0,
+  "velocity_coeff": 0.6
 }

@@ -104,14 +104,59 @@ JOINTS = [
 GRAVITY = -90.0
 HIP_SWING_SPEED = 5.0
 KNEE_SWING_SPEED = 6.0
-HIP_PRESS = 28000.0     # 按 Q/O 时髋部驱动扭矩
-HIP_HOLD = 14000.0      # 松键时髋部刹车/保持扭矩（锁住大腿姿态, 需撑住体重）
-KNEE_PRESS = 12000.0    # 按 W/P 时膝部驱动扭矩
-KNEE_HOLD = 6000.0      # 松键时膝部刹车/保持扭矩（防止膝盖在体重下弯折）
-# 躯干核心稳定: 每帧直接对躯干施加扶正扭矩 (PD), 保证底座可学
-CORE_KP = 45000.0
-CORE_KD = 4500.0
-CORE_MAX = 60000.0
+# 重构(冲33s): 放开关节驱动扭矩, 让腿能真正快速摆动形成奔跑
+HIP_PRESS = 65000.0     # 按 Q/O 时髋部驱动扭矩（52s 最优配置）
+HIP_HOLD = 20000.0      # 松键时髋部刹车/保持扭矩（锁住大腿姿态, 需撑住体重）
+KNEE_PRESS = 38000.0    # 按 W/P 时膝部驱动扭矩（52s 最优配置）
+KNEE_HOLD = 10000.0     # 松键时膝部刹车/保持扭矩（防止膝盖在体重下弯折）
+# 躯干核心稳定: 每帧直接对躯干施加 PD 扶正力矩, 保证底座可学。
+# 注: 实验已证(2026-07-30) 改为"前倾/软核心"奔跑重构均退化为 ~71s; 直立+CLAMP=26 即 52s
+# 是本位置式控制 + 始终扶正设计的速度上限(无腾空相, 只能快走, 见 README)。
+CORE_KP = 40000.0
+CORE_KD = 5000.0
+CORE_MAX = 70000.0
+
+# ===========================================================================
+# 深度动力学重构 (冲 33s / 真正奔跑): RUN_RECONSTRUCT = True
+# ---------------------------------------------------------------------------
+# 根因: 52s 天花板来自"核心始终锁直立"——躯干是根刚性竖直杆, 质心永远在双脚
+# 支撑面之上, 永远不会出现"质心超前→腾空→下一脚接住"的奔跑循环, 只能快走。
+# 重构让 ragdoll 真正能跑(带腾空相):
+#   1) 条件式核心: 小角度时只给弱弹簧(允许前倾), 超过防摔阈值才上强 PD。
+#      制造"可被学习的不稳定可恢复态"= 奔跑所需的动力学。
+#   2) 放开关节速度钳制 CLAMP 26 -> RUN_CLAMP, 腿能更快摆动/蹬伸, 抬高步频上限。
+#   3) 降低躯干/头转动惯量(密度下调), 躯干更易前倾摆动, 奔跑步态更易学。
+# 设为 False 时, 全部回退到 52s 最优行为(与原版逐字节一致), 用于保留备份。
+#
+# 【实验结论 2026-07-30/31】重构未能突破 52s, 故**默认关闭**:
+#   - v1 条件式核心 + 放开 CLAMP (3M 步) -> 57.1s / 1.75 m/s
+#   - v2 再叠加力矩驱动肌肉 (2M 步)      -> 67.8s / 1.47 m/s
+#   两者均慢于 52s 基准。详见 README「深度动力学重构」一节。
+# 用环境变量 QWOP_RECON=1 开启以复现该实验。
+# ===========================================================================
+RUN_RECONSTRUCT = os.environ.get("QWOP_RECON", "0") == "1"
+CORE_LEAN_TARGET = 0.25     # 平时弱弹簧目标前倾角(rad), 默认略前倾更利于奔跑
+CORE_WEAK_KP = 8000.0       # 平时弱弹簧刚度(允许前倾/奔跑, 不至于一碰就倒)
+CORE_WEAK_KD = 1500.0       # 平时弱弹簧阻尼
+CORE_PANIC_ANGLE = 0.70     # |躯干角|超过此值(约40°)进入强 PD 防摔
+RUN_CLAMP = 55.0            # 重构模式关节速度上限(放开以提速)
+# 重构模式下调低躯干/头密度, 降低转动惯量
+if RUN_RECONSTRUCT:
+    GEOM["torso"]["density"] = 0.55
+    GEOM["head"]["density"] = 0.40
+
+# ---------------------------------------------------------------------------
+# 深度重构 v2 (冲33s 真正奔跑): RUN_TORQUE = True —— 肌肉改为力矩驱动
+# ---------------------------------------------------------------------------
+# 关键发现(2026-07-30): 位置伺服下达的电机速度 = K_POS*(target-angle) ≈ 25*0.95 ≈ 24,
+# 真正限速的是 K_POS 而非 CLAMP; 故仅放开 CLAMP 几乎不影响腿速, v1 仍卡在~60s 快走。
+# 要真正提速/蹬地腾空, 必须让肌肉"用力": 按下键时以最大扭矩朝目标方向猛推到关节限位
+# (爆发性蹬伸 + 更大步幅); 松开键时仍用位置伺服温和回中(受控恢复, 不至于失控)。
+# 设 False 时(即便 RUN_RECONSTRUCT=True)仍用位置伺服, 回退到 v1 行为。
+# 用环境变量 QWOP_TORQUE 控制(默认关闭), 便于在不同物理实验间 A/B 而不互相污染
+# (v1 评估不设变量->False 与训练一致; v2 训练/评估设 QWOP_TORQUE=1)。
+RUN_TORQUE = os.environ.get("QWOP_TORQUE", "0") == "1"
+TORQUE_DRIVE_SPEED = 60.0   # 按下键时的电机目标速度(远超可达->等效恒定最大扭矩驱动)
 
 
 class QWOPPhysics:
@@ -174,35 +219,63 @@ class QWOPPhysics:
                 self.motors[motor] = joint
 
     def set_keys(self, q, w, o, p):
-        """根据 Q/W/O/P 开关对应电机（位置式控制）。
+        """根据 Q/W/O/P 开关对应电机。
 
-        髋部: 按住 -> 把大腿摆到"前伸"目标角(脚后蹬推身体前进); 松开 -> 回到中立直立。
-        膝部: 按住 -> 屈膝抬脚; 松开 -> 伸直。
-        躯干直立由 step() 里每帧直接施加的 PD 扶正力矩保证 (见 _stabilize_core)。
+        默认(位置式伺服): 髋前伸=负角, 膝屈曲=正角; 松开回中立。
+        重构 v2(RUN_TORQUE=True): 按下键时以最大扭矩朝目标方向猛推到关节限位
+        (爆发性蹬伸), 松开键时用位置伺服温和回中。见文件顶部 RUN_TORQUE 说明。
+        躯干稳定由 _stabilize_core 处理。
         """
         want = {"hipL": q, "kneeL": w, "hipR": o, "kneeR": p}
         # 位置控制目标角: 髋前伸=负角(标定为前进方向), 膝屈曲=正角
-        HIP_TARGET = -0.6
-        KNEE_TARGET = 1.0
+        HIP_TARGET = -0.95   # 52s 最优配置: 较大前伸步幅
+        KNEE_TARGET = 1.2    # 较大屈膝以获得蹬地推力
         K_POS = 25.0
-        CLAMP = 12.0
+        # 重构模式放开速度钳制(26->RUN_CLAMP), 让腿能更快摆动/蹬伸以形成奔跑
+        CLAMP = RUN_CLAMP if RUN_RECONSTRUCT else 26.0
         self._keys = want
         for key, joint in self.motors.items():
-            if "hip" in key:
+            is_hip = "hip" in key
+            if is_hip:
                 target = HIP_TARGET if want[key] else 0.0
                 torque = HIP_PRESS if want[key] else HIP_HOLD
+                # 髋前伸方向: 负角=负方向; 松键回中立=正方向
+                drive_sign = -1.0 if (want[key]) else 1.0
             else:
                 target = KNEE_TARGET if want[key] else 0.0
                 torque = KNEE_PRESS if want[key] else KNEE_HOLD
-            motor_speed = max(-CLAMP, min(CLAMP, K_POS * (target - joint.angle)))
+                # 膝屈曲方向: 正角=正方向; 松键伸直=负方向
+                drive_sign = 1.0 if (want[key]) else -1.0
+            if RUN_TORQUE and want[key]:
+                # 按下键: 力矩驱动, 最大扭矩猛推到限位(爆发性蹬伸/前摆)
+                motor_speed = drive_sign * TORQUE_DRIVE_SPEED
+            else:
+                # 位置伺服: 温和趋近目标角(或松键回中)
+                motor_speed = max(-CLAMP, min(CLAMP, K_POS * (target - joint.angle)))
             joint.motorEnabled = True
             joint.motorSpeed = motor_speed
             joint.maxMotorTorque = torque
 
     def _stabilize_core(self):
-        """每帧直接对躯干施加 PD 扶正力矩，使其维持直立（模拟核心张力）。"""
+        """每帧直接对躯干施加 PD 扶正力矩（模拟核心张力）。
+
+        非重构模式(52s 最优): 锁直立(angle=0)。
+        重构模式(冲33s): 条件式核心——小角度只给弱弹簧(允许前倾/奔跑),
+        超过 CORE_PANIC_ANGLE 才上强 PD 防摔, 制造可被学习的"不稳定可恢复态",
+        这是出现腾空相、真正奔跑的前提(见文件顶部 RUN_RECONSTRUCT 说明)。
+        """
         torso = self.bodies["torso"]
-        t = -(CORE_KP * torso.angle + CORE_KD * torso.angularVelocity)
+        a = torso.angle
+        av = torso.angularVelocity
+        if RUN_RECONSTRUCT and abs(a) > CORE_PANIC_ANGLE:
+            # 接近摔倒: 强 PD 把躯干拉回直立, 防止彻底扑街
+            t = -(CORE_KP * a + CORE_KD * av)
+        elif RUN_RECONSTRUCT:
+            # 平时: 弱弹簧维持略前倾姿态, 允许躯干随步姿前倾产生奔跑腾空相
+            t = -(CORE_WEAK_KP * (a - CORE_LEAN_TARGET) + CORE_WEAK_KD * av)
+        else:
+            # 52s 最优: 始终锁直立
+            t = -(CORE_KP * a + CORE_KD * av)
         t = max(-CORE_MAX, min(CORE_MAX, t))
         torso.ApplyTorque(t, True)
 
@@ -325,6 +398,7 @@ class QWOPPhysEnv(gym.Env):
                     "hurdle_stand_bonus": 8.0, "hurdle_crawl_bonus": 1.0,
                     "hurdle_stand_sin_threshold": 0.7, "hurdle_stand_headY_threshold": 0.0,
                     "jump_distance_bonus": 1.0, "success_terminal_bonus": 50.0,
+                    "speed_bonus_coef": 0.0, "velocity_coeff": 0.0,
                 }
             self._reward_cfg = cfg
             self._reward_mtime = mtime
@@ -336,6 +410,7 @@ class QWOPPhysEnv(gym.Env):
         state = self._phys.get_state()
         self._steps = 0
         self._last_metres = state["metres"]
+        self._last_x = state["x"]
         self._hurdle_x = state.get("hurdleX")
         self._crossed_hurdle = False
         self._standing_at_hurdle = False
@@ -359,6 +434,12 @@ class QWOPPhysEnv(gym.Env):
         reward = cfg["forward_per_metre"] * (metres - self._last_metres)
         reward -= cfg["time_penalty_per_step"]
 
+        # 密集前向速度奖励：每步直接奖励"此刻前进有多快"，把目标从"到达终点"
+        # 扭成"尽快前进"（对比只有终点速度奖励，这个信号每步都在，学习快得多）。
+        vx = (x - self._last_x) / 10.0 / (self.frames_per_step * DT)  # m/s (1u=0.1m)
+        reward += cfg.get("velocity_coeff", 0.0) * vx
+        self._last_x = x
+
         if self._hurdle_x is not None and not self._crossed_hurdle and x >= self._hurdle_x:
             self._crossed_hurdle = True
             sin_a = abs(math.sin(state.get("torsoAngle", 0.0)))
@@ -372,6 +453,11 @@ class QWOPPhysEnv(gym.Env):
             self._finished = True
             final_m = max(metres, float(state.get("score") or 0))
             reward += cfg["jump_distance_bonus"] * final_m + cfg["success_terminal_bonus"]
+            # 速度奖励: 终点速度越高(用时越短)奖励越大, 直接把目标从"到达终点"扭成"尽快到达"
+            coef = cfg.get("speed_bonus_coef", 0.0)
+            if coef:
+                time_sec = self._steps * self.frames_per_step * DT
+                reward += coef * (100.0 / max(time_sec, 1e-3))
 
         if fell:
             reward -= cfg["fall_penalty"]
